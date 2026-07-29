@@ -17,6 +17,8 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
+import torch
+
 from experiment.factorial_design import build_factorial_grid, deduplicate_baseline_cells
 from training.train_classifier import train_experimental_cell
 from utils.logging_utils import get_logger
@@ -34,16 +36,56 @@ def main(config_path: str, cell_index: int | None) -> None:
     cells = deduplicate_baseline_cells(build_factorial_grid(cfg))
     targets = cells if cell_index is None else [cells[cell_index]]
 
+    # Load fixed val + test data once (same across all cells)
+    import pandas as pd
+
+    from data.dataset import OCTImageDataset, build_data_loaders, get_default_transforms
+
+    # We load val from CSVs — the val split never receives synthetic data
+    split_dir = Path(cfg["data"]["processed_dir"]) / "splits"
+    val_df = pd.read_csv(split_dir / "val.csv")
+    test_df = pd.read_csv(split_dir / "test.csv")
+
+    class_to_idx = {c: i for i, c in enumerate(cfg["data"]["classes"])}
+    val_transform = get_default_transforms(cfg["data"]["image_size"], train=False)
+    val_dataset = OCTImageDataset(val_df, class_to_idx, val_transform, image_size=cfg["data"]["image_size"])
+    val_loader = torch.utils.data.DataLoader(
+        val_dataset,
+        batch_size=cfg["training"]["batch_size"],
+        shuffle=False,
+        num_workers=cfg["training"]["num_workers"],
+        pin_memory=True,
+        drop_last=False,
+    )
+
+    _ = test_df  # test_loader not used during training; kept for consistency
+
     for cell in targets:
         logger.info(f"Training cell: {cell.run_id}")
-        # TODO: build train_loader/val_loader from
-        # index_dir / f"{cell.run_id-with-safe-chars}.csv" via
-        # data/dataset.py::OCTImageDataset, then call:
-        # train_experimental_cell(cell, train_loader, val_loader, cfg, checkpoint_dir)
-        raise NotImplementedError(
-            "TODO: wire up DataLoader construction from the materialized "
-            "per-cell index CSVs, then call train_experimental_cell(...)"
+        # Load the per-cell mixed training index
+        safe_name = cell.run_id.replace("|", "_").replace("=", "")
+        train_index_csv = index_dir / f"{safe_name}.csv"
+        if not train_index_csv.exists():
+            raise FileNotFoundError(
+                f"Materialized training index not found: {train_index_csv}. "
+                f"Run experiment/dataset_builder.py::materialize_all_cells first."
+            )
+        train_df = pd.read_csv(train_index_csv)
+        train_transform = get_default_transforms(cfg["data"]["image_size"], train=True)
+        train_dataset = OCTImageDataset(
+            train_df, class_to_idx, train_transform, image_size=cfg["data"]["image_size"]
         )
+        train_loader = torch.utils.data.DataLoader(
+            train_dataset,
+            batch_size=cfg["training"]["batch_size"],
+            shuffle=True,
+            num_workers=cfg["training"]["num_workers"],
+            pin_memory=True,
+            drop_last=True,
+        )
+
+        train_experimental_cell(cell, train_loader, val_loader, cfg, checkpoint_dir)
+        logger.info(f"Completed cell: {cell.run_id}")
 
 
 if __name__ == "__main__":

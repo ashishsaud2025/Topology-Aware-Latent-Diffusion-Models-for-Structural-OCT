@@ -1,3 +1,9 @@
+# demo script & output
+_quick_demo.py
+_smoke_test.py
+_demo_output/
+docs/
+
 __pycache__/
 *.pyc
 .venv/
@@ -16,3 +22,9 @@ outputs/
 .DS_Store
 .idea/
 .vscode/
+.venv/
+.pytest_cache/
+
+
+# temporary files
+data/test_raw/

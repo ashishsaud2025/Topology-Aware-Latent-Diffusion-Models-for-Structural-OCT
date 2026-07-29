@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import argparse
 
-
 def main() -> None:
     parser = argparse.ArgumentParser(
         description="OCT topology-aware LDM augmentation study -- pipeline CLI"
@@ -30,9 +29,11 @@ def main() -> None:
             load_raw_dataset_index,
             preprocess_images,
             run_class_analysis_report,
+            save_splits_to_csv,
             stratified_patient_level_split,
         )
         from utils.seed import load_config, set_global_seed
+        from pathlib import Path
 
         cfg = load_config(args.config)
         set_global_seed(cfg["project"]["seed"])
@@ -47,7 +48,10 @@ def main() -> None:
             test_frac=cfg["data"]["test_split"],
             seed=cfg["project"]["seed"],
         )
-        run_class_analysis_report(splits, "class_analysis_report.csv")
+        # Persist split CSVs so downstream stages can load them independently
+        split_out_dir = Path(cfg["data"]["processed_dir"]) / "splits"
+        save_splits_to_csv(splits, str(split_out_dir))
+        run_class_analysis_report(splits, str(split_out_dir / "class_analysis_report.csv"))
 
     elif args.command == "generate":
         from scripts.run_generation import main as run_generation_main

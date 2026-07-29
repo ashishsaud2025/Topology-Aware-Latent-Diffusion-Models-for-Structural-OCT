@@ -11,6 +11,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Dict, List
 
+import pandas as pd
 import numpy as np
 import torch
 from sklearn.metrics import (
@@ -28,13 +29,37 @@ from models.classifiers import build_classifier
 
 
 @torch.no_grad()
-def collect_predictions(model: torch.nn.Module, test_loader: DataLoader, device: str):
+def collect_predictions(
+    model: torch.nn.Module, test_loader: DataLoader, device: str
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Run inference over the fixed test set, returning (y_true, y_pred,
     y_proba) as numpy arrays for metric computation.
 
-    TODO: implement inference loop with softmax over logits for y_proba.
+    Softmax is applied to logits to produce y_proba for ROC-AUC computation.
     """
-    raise NotImplementedError("TODO: implement inference loop over test_loader")
+    model.to(device).eval()
+
+    all_true: list[int] = []
+    all_pred: list[int] = []
+    all_proba: list[np.ndarray] = []
+
+    for batch in test_loader:
+        images, labels = batch[0].to(device), batch[1].to(device)
+
+        logits = model(images)
+        probs = torch.softmax(logits, dim=1)
+
+        _, predicted = logits.max(1)
+
+        all_true.extend(labels.cpu().numpy().tolist())
+        all_pred.extend(predicted.cpu().numpy().tolist())
+        all_proba.extend(probs.cpu().numpy())
+
+    return (
+        np.array(all_true),
+        np.array(all_pred),
+        np.array(all_proba),
+    )
 
 
 def compute_metrics(

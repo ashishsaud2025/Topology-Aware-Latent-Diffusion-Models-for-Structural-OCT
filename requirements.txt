@@ -14,6 +14,7 @@ matplotlib
 seaborn
 pyyaml
 tqdm
+einops
 grad-cam
 Pillow
 POT  # Python Optimal Transport, used for Earth Mover's Distance

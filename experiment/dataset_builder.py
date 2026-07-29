@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from typing import Dict
 
+import numpy as np
 import pandas as pd
 
 from experiment.factorial_design import ExperimentalCell
@@ -29,13 +30,110 @@ def allocate_synthetic_counts(
       under-represented classes first.
     - fully_balanced: synthetic images are added first to equalize all
       classes to the majority-class count; any additional ratio budget
-      beyond that point is then split proportionally (TODO: confirm this
-      tie-breaking rule matches your intended H2 operationalization).
-
-    TODO: implement the three branches precisely; unit-test them against
-    known small examples (see tests/test_factorial_design.py for scaffolding).
+      beyond that point is then split proportionally.
     """
-    raise NotImplementedError("TODO: implement per-strategy synthetic allocation")
+    if not real_train_counts:
+        return {}
+    if ratio <= 0.0:
+        return {c: 0 for c in real_train_counts}
+
+    total_real = sum(real_train_counts.values())
+    total_synth_budget = int(round(ratio * total_real))
+
+    classes = sorted(real_train_counts.keys())
+    counts = np.array([real_train_counts[c] for c in classes])
+    majority_count = int(counts.max())
+    mean_count = counts.mean()
+
+    if distribution_strategy == "proportional":
+        # Allocate in proportion to existing real class sizes
+        proportions = counts / counts.sum()
+        raw = proportions * total_synth_budget
+        synth_per_class = {c: max(0, int(round(r))) for c, r in zip(classes, raw)}
+        # Adjust rounding errors to hit the budget exactly
+        allocated = sum(synth_per_class.values())
+        diff = total_synth_budget - allocated
+        if diff != 0:
+            # Add/subtract from the largest class
+            largest = max(synth_per_class, key=synth_per_class.get)
+            synth_per_class[largest] = max(0, synth_per_class[largest] + diff)
+        return synth_per_class
+
+    elif distribution_strategy == "minority_only":
+        # Only classes below the mean count get synthetic images
+        minority_mask = counts < mean_count
+        if not minority_mask.any():
+            return {c: 0 for c in classes}
+        minority_counts = counts[minority_mask]
+        # Allocate budget proportional to how far below the mean each minority class is
+        deficits = mean_count - minority_counts
+        deficit_proportions = deficits / deficits.sum()
+        raw = deficit_proportions * total_synth_budget
+        result = {c: 0 for c in classes}
+        for idx, c in enumerate(classes):
+            if minority_mask[idx]:
+                result[c] = max(0, int(round(raw[sum(minority_mask[:idx])])))
+        # Adjust rounding
+        allocated = sum(result.values())
+        diff = total_synth_budget - allocated
+        if diff != 0:
+            # Give remaining to the most under-represented class
+            most_minority = min(result, key=lambda c: (real_train_counts[c], -result[c]))
+            result[most_minority] = max(0, result[most_minority] + diff)
+        return result
+
+    elif distribution_strategy == "fully_balanced":
+        # 1) First pass: equalize all classes to the majority count
+        deficits_to_majority = np.maximum(majority_count - counts, 0)
+        equalize_cost = int(deficits_to_majority.sum())
+        remaining_budget = total_synth_budget - equalize_cost
+
+        # Allocate the equalization tokens first
+        synth_per_class = {c: max(0, int(deficits_to_majority[i])) for i, c in enumerate(classes)}
+        synth_per_class = {c: min(s, total_synth_budget) for c, s in synth_per_class.items()}
+
+        # 2) Any remaining budget is split proportionally
+        if remaining_budget > 0:
+            # After equalization, all classes have at least majority_count
+            # Counts after equalization
+            post_equalize = np.array([
+                max(counts[i], majority_count)
+                for i in range(len(classes))
+            ])
+            proportions = post_equalize / post_equalize.sum()
+            extra_raw = proportions * remaining_budget
+            extra_alloc = {c: max(0, int(round(extra_raw[i]))) for i, c in enumerate(classes)}
+            for c in classes:
+                synth_per_class[c] += extra_alloc[c]
+            # Adjust rounding
+            allocated = sum(synth_per_class.values())
+            diff = total_synth_budget - allocated
+            if diff != 0:
+                largest = max(synth_per_class, key=synth_per_class.get)
+                synth_per_class[largest] = max(0, synth_per_class[largest] + diff)
+        else:
+            # Not enough budget to fully equalize; allocate proportionally
+            # to the deficit magnitude
+            deficits = deficits_to_majority
+            if deficits.sum() > 0:
+                proportions = deficits / deficits.sum()
+                raw = proportions * total_synth_budget
+                synth_per_class = {
+                    c: max(0, int(round(raw[i])))
+                    for i, c in enumerate(classes)
+                }
+                allocated = sum(synth_per_class.values())
+                diff = total_synth_budget - allocated
+                if diff != 0:
+                    largest = max(synth_per_class, key=synth_per_class.get)
+                    synth_per_class[largest] = max(0, synth_per_class[largest] + diff)
+            else:
+                synth_per_class = {c: 0 for c in classes}
+
+        return synth_per_class
+
+    else:
+        raise ValueError(f"Unknown distribution_strategy: {distribution_strategy}")
 
 
 def build_mixed_training_index(
@@ -58,6 +156,8 @@ def build_mixed_training_index(
 
     sampled_frames = [real_train_df]
     for class_name, n in synth_counts.items():
+        if n <= 0:
+            continue
         class_pool = synthetic_pool_df[synthetic_pool_df[label_col] == class_name]
         if n > len(class_pool):
             raise ValueError(
