@@ -1,0 +1,87 @@
+# =============================================================================
+# Central configuration for the OCT topology-aware LDM augmentation study
+# =============================================================================
+
+project:
+  name: "oct-topology-ldm-augmentation"
+  seed: 42
+  output_dir: "outputs/"
+  device: "cuda"  # falls back to cpu if unavailable
+
+data:
+  raw_dir: "data_raw/"                  # TODO: path to raw OCT dataset (e.g. Kermany et al. OCT2017 / OCT-C8)
+  processed_dir: "data_processed/"
+  classes: ["NORMAL", "CNV", "DME", "DRUSEN"]  # TODO: confirm class taxonomy against your dataset
+  image_size: 224
+  test_split: 0.15                      # held-out FIXED real test set, never touched by synthetic data
+  val_split: 0.15
+  train_split: 0.70
+
+generative:
+  model_type: "monai_ldm"               # MONAI Generative Models: autoencoder + diffusion UNet
+  autoencoder_checkpoint: null          # TODO: path once trained/fine-tuned
+  diffusion_checkpoint: null            # TODO: path once trained/fine-tuned
+  latent_channels: 3
+  image_size: 224
+  num_train_epochs: 200
+  batch_size: 16
+  learning_rate: 2.5e-5
+  num_inference_steps: 1000
+  scheduler: "ddpm"                     # ddpm | ddim
+  conditioning: "class_label"           # class-conditional generation
+
+# ---------------------------------------------------------------------------
+# Factorial design: Factor A x Factor B x Factor C  (3 x 5 x 3 design)
+# ---------------------------------------------------------------------------
+experiment:
+  factor_a_synthetic_ratio:             # proportion of synthetic:real images injected
+    - 0.0     # baseline: 0% synthetic (real data only)
+    - 0.25
+    - 0.50
+    - 0.75
+    - 1.00    # 100% synthetic augmentation ceiling
+  factor_b_distribution_strategy:
+    - "proportional"     # synthetic images added in same class proportions as real data
+    - "minority_only"    # synthetic images allocated only to minority/rare classes
+    - "fully_balanced"   # synthetic images added until all classes are equally represented
+  factor_c_architecture:
+    - "resnet50"
+    - "efficientnet_b0"
+    - "vit_base"
+  n_seeds_per_cell: 3       # repeated runs per experimental cell for variance estimation
+  cross_validation_folds: 1 # set >1 to enable k-fold in addition to seed repeats
+
+training:
+  batch_size: 32
+  num_epochs: 50
+  learning_rate: 1.0e-4
+  weight_decay: 1.0e-5
+  optimizer: "adamw"
+  lr_scheduler: "cosine"
+  early_stopping_patience: 8
+  num_workers: 8
+
+evaluation:
+  metrics: ["accuracy", "precision", "recall", "f1", "roc_auc", "per_class_report"]
+
+explainability:
+  cnn_method: "gradcam"          # for ResNet50 / EfficientNet-B0
+  vit_method: "attention_rollout" # for ViT
+  target_layers:
+    resnet50: "layer4"
+    efficientnet_b0: "conv_head"
+  quantitative_metrics: ["iou", "dice", "center_of_mass_distance", "earth_movers_distance"]
+  lesion_mask_dir: null            # TODO: path to ground-truth/lesion attention masks if available
+  heatmap_threshold: 0.5           # binarization threshold for IoU/Dice computation
+
+statistics:
+  alpha: 0.05
+  anova_type: "three_way"          # main effects + all 2-way and 3-way interactions
+  post_hoc_test: "tukey_hsd"
+  correction_method: "bonferroni"
+
+hypotheses:
+  h1_synthetic_ratio_effect: true
+  h2_distribution_strategy_effect: true
+  h3_architecture_interaction: true
+  h4_explainability_effect: true

@@ -1,0 +1,18 @@
+__pycache__/
+*.pyc
+.venv/
+venv/
+*.egg-info/
+
+# data and generated artifacts
+data_raw/
+data_processed/
+outputs/
+*.pt
+*.pth
+*.ckpt
+
+# OS/editor
+.DS_Store
+.idea/
+.vscode/
