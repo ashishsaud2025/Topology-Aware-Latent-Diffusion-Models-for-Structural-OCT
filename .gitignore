@@ -28,3 +28,11 @@ outputs/
 
 # temporary files
 data/test_raw/
+
+# proposal/report artifacts (not part of the code repo)
+reports/
+*.docx
+*.pdf
+scripts/convert_md_to_docx.py
+scripts/convert_to_docx.py
+scripts/verify_docx.py

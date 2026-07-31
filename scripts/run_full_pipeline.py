@@ -69,6 +69,28 @@ def main(config_path: str) -> None:
         cfg, max_requirement, Path(cfg["data"]["processed_dir"]) / "synthetic"
     )
 
+    # ---- Stage 2B: Topological Validation of Synthetic Images ----------------
+    logger.info("Stage 2B: topological validation (real vs synthetic layer structure)")
+    from topology.topological_validation import run_topological_validation
+
+    topology_summary = run_topological_validation(
+        cfg,
+        real_index=splits["train"],
+        synthetic_index=synthetic_pool_df,
+        output_dir=output_dir / "topology",
+    )
+    n_failed = (
+        int((~topology_summary["topology_passed"]).sum())
+        if not topology_summary.empty else -1
+    )
+    if n_failed > 0:
+        logger.warning(
+            f"Topology gate: {n_failed} boundary-class comparisons FAILED. "
+            "Review topology/topology_report.csv before proceeding."
+        )
+    else:
+        logger.info("Topology gate PASSED: synthetic images preserve real layer topology.")
+
     # ---- Stage 4: Experimental Design (3x5x3 factorial grid) ----------------
     logger.info("Stage 4: build factorial design")
     cells = build_factorial_grid(cfg)

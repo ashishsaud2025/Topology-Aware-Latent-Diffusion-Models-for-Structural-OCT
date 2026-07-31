@@ -1,7 +1,4 @@
-# =============================================================================
 # Central configuration for the OCT topology-aware LDM augmentation study
-# =============================================================================
-
 project:
   name: "oct-topology-ldm-augmentation"
   seed: 42
@@ -30,9 +27,17 @@ generative:
   scheduler: "ddpm"                     # ddpm | ddim
   conditioning: "class_label"           # class-conditional generation
 
-# ---------------------------------------------------------------------------
+# Stage 2B: Topological validation of synthetic OCT images
+topology:
+  segmentation:
+    backend: "profile"            # "profile" (intensity heuristic) | "unet" (Duke-trained MONAI UNet)
+    checkpoint_path: null          # TODO: path to trained UNet segmentation checkpoint (Duke DME)
+  use_persistence: true            # use persistent homology (ripser/gudhi) when available
+  max_samples_per_class: 200       # images per class compared in the real-vs-synthetic topology test
+  pass_threshold_beta0: 0.5        # max allowed mean difference in connected components
+  pass_threshold_beta1: 0.5        # max allowed mean difference in holes/loops
+
 # Factorial design: Factor A x Factor B x Factor C  (3 x 5 x 3 design)
-# ---------------------------------------------------------------------------
 experiment:
   factor_a_synthetic_ratio:             # proportion of synthetic:real images injected
     - 0.0     # baseline: 0% synthetic (real data only)

@@ -14,6 +14,7 @@ Real OCT Dataset
   → Train AutoencoderKL (perceptual + KL loss)
   → Train Diffusion UNet in latent space (class-conditioned DDPM)
   → Generate Synthetic Images per Class
+  → Topological Validation (Stage 2B: layer segmentation + persistent homology)
   → Experimental Design (Factor A: synthetic ratio, Factor B: distribution strategy, Factor C: architecture)
   → Materialize Experimental Datasets (mixing real + synthetic)
   → Train Classification Models (ResNet50 / EfficientNet-B0)
@@ -34,6 +35,10 @@ oct-topology-diffusion/
 ├── generative/
 │   ├── train_ldm.py                   # MONAI AutoencoderKL + DiffusionModelUNet training
 │   └── generate_synthetic.py          # per-class conditional sampling via DDPM
+├── topology/
+│   ├── layer_segmentation.py          # 8-layer retinal segmentation (profile + UNet backends)
+│   ├── persistent_homology.py         # Betti numbers (beta_0, beta_1) + persistence diagrams
+│   └── topological_validation.py      # real-vs-synthetic topology gate (Stage 2B)
 ├── experiment/
 │   ├── factorial_design.py            # builds the 3×3×2 factorial cell grid (Factors A/B/C)
 │   └── dataset_builder.py             # allocates synthetic counts per cell
@@ -59,6 +64,7 @@ oct-topology-diffusion/
 │   ├── run_generation.py              # (stub)
 │   ├── run_experiment_grid.py         # (stub)
 │   └── run_analysis.py                # (stub)
+│   └── train_duke_segmentation.py     # trains the Duke DME layer-segmentation UNet (Stage 2B backend)
 ├── tests/
 │   └── test_factorial_design.py       # unit tests for the factorial grid
 ├── _quick_demo.py                     # end-to-end pipeline demo (see Quickstart)
@@ -140,6 +146,9 @@ python main.py analyze --config configs/config.yaml
 | `data/init_test_data.py` | ✅ Complete | Generates 3‑class synthetic OCT data for development |
 | `generative/train_ldm.py` | ✅ Complete | AE + UNet builders, training loops, checkpoint save/load |
 | `generative/generate_synthetic.py` | ✅ Complete | Class‑conditional DDPM sampling, synthetic pool generation |
+| `topology/layer_segmentation.py` | ✅ Complete | 8‑layer retinal segmentation (intensity‑profile + MONAI UNet backends) |
+| `topology/persistent_homology.py` | ✅ Complete | Betti numbers + persistence diagrams (ripser/gudhi with exact fallback) |
+| `topology/topological_validation.py` | ✅ Complete | Real‑vs‑synthetic topology comparison, Mann‑Whitney gate |
 | `models/classifiers.py` | ✅ Complete | ResNet50, EfficientNet‑B0 with pretrained‑weight management |
 | `experiment/factorial_design.py` | ✅ Complete | 3‑factor grid, deduplication, metadata summaries |
 | `experiment/dataset_builder.py` | ✅ Complete | `allocate_synthetic_counts` with 3 strategies |
