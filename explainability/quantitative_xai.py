@@ -46,11 +46,7 @@ def compute_dice(mask_a: np.ndarray, mask_b: np.ndarray) -> float:
 
 def compute_center_of_mass(heatmap: np.ndarray) -> np.ndarray:
     """Compute the (row, col) center-of-mass of a heatmap, weighting each
-    pixel by its (non-negative) intensity.
-
-    TODO: consider using the raw continuous heatmap (not the binarized mask)
-    for a more precise centroid estimate, per the pipeline's
-    "Center-of-Mass Distance" metric name.
+    pixel by its raw continuous (non-negative) intensity.
     """
     heatmap = np.clip(heatmap, a_min=0, a_max=None)
     total_mass = heatmap.sum()
@@ -75,15 +71,54 @@ def compute_center_of_mass_distance(heatmap_a: np.ndarray, heatmap_b: np.ndarray
     return float(np.linalg.norm(com_a - com_b))
 
 
-def compute_earth_movers_distance(heatmap_a: np.ndarray, heatmap_b: np.ndarray) -> float:
+def compute_earth_movers_distance(
+    heatmap_a: np.ndarray, heatmap_b: np.ndarray, max_samples: int = 512
+) -> float:
     """2D Earth Mover's Distance (Wasserstein distance) between two heatmaps
     treated as (normalized) probability distributions over pixel locations.
 
-    TODO: implement via the `POT` (Python Optimal Transport) package, e.g.
-    `ot.emd2` with a pixel-coordinate cost matrix, or `ot.sliced_wasserstein_distance`
-    for a computationally cheaper approximation over larger heatmaps.
+    Implemented via the POT library: pixel locations are subsampled to at most
+    `max_samples` points (stratified grid pattern, deterministic/reproducible)
+    so the exact `ot.emd2` transport LP builds a cost matrix of at most
+    max_samples x max_samples.
     """
-    raise NotImplementedError("TODO: implement 2D EMD via the POT library")
+    import ot
+
+    if heatmap_a.shape != heatmap_b.shape:
+        # Upsample the smaller to the larger for a fair comparison
+        from skimage.transform import resize
+
+        target = heatmap_b.shape if heatmap_a.size < heatmap_b.size else heatmap_a.shape
+        heatmap_a = resize(heatmap_a, target, mode="reflect", preserve_range=True)
+        heatmap_b = resize(heatmap_b, target, mode="reflect", preserve_range=True)
+
+    h, w = heatmap_a.shape
+    total = h * w
+
+    # Subsample a deterministic grid of pixel locations (≈ max_samples points)
+    if total <= max_samples:
+        stride = 1
+    else:
+        stride = int(np.ceil(np.sqrt(total / max_samples)))
+    rows_s = np.arange(0, h, stride)
+    cols_s = np.arange(0, w, stride)
+    grid_rows, grid_cols = np.meshgrid(rows_s, cols_s, indexing="ij")
+    locs_a = np.stack([grid_rows.ravel(), grid_cols.ravel()], axis=1).astype(float)
+    w_a = heatmap_a[np.ix_(rows_s, cols_s)].ravel()
+    locs_b = locs_a.copy()
+    w_b = heatmap_b[np.ix_(rows_s, cols_s)].ravel()
+
+    # Normalize weights to probability distributions
+    w_a = np.clip(w_a, 0, None)
+    w_b = np.clip(w_b, 0, None)
+    if w_a.sum() <= 0 or w_b.sum() <= 0:
+        return float("nan")
+    w_a = w_a / w_a.sum()
+    w_b = w_b / w_b.sum()
+
+    # Cost matrix: Euclidean distance between pixel locations
+    M = ot.dist(locs_a, locs_b, metric="euclidean")
+    return float(ot.emd2(w_a, w_b, M))
 
 
 def evaluate_heatmap_pair(

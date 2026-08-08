@@ -59,12 +59,19 @@ def _extract_patient_id(filename: str) -> Optional[str]:
 
     Supports common OCT dataset naming conventions:
       - OCT2017:  <patient_id>-<image_id>.jpeg  (e.g. "10234-1.jpeg")
+      - OCT2017 (class-prefixed): "CNV-1016042-1.jpeg" -> patient=1016042
       - Custom:   <patient_id>_<something>.png, PAT_<id>_<image>.png
       - Fallback: use the filename stem itself as a unique patient id.
 
     Returns a string patient identifier, or None if the filename is malformed.
     """
     stem = Path(filename).stem
+
+    # Pattern 0: Kermany OCT2017 with class prefix "CNV-1016042-1.jpeg"
+    # -> patient=1016042  (class name prefix [A-Za-z]+, then patient-image)
+    m = re.match(r"^[A-Za-z]+-(\d+)-(\d+)$", stem)
+    if m:
+        return m.group(1)
 
     # Pattern 1: OCT2017-style "12345-2.jpeg" -> patient=12345
     m = re.match(r"^(\d+)-(\d+)$", stem)
@@ -85,7 +92,78 @@ def _extract_patient_id(filename: str) -> Optional[str]:
     return stem
 
 
-def load_raw_dataset_index(raw_dir: str | Path, classes: List[str]) -> pd.DataFrame:
+def subset_patient_level(
+    index_df: pd.DataFrame,
+    max_samples_per_class: int,
+    seed: int = 42,
+    patient_col: str = "patient_id",
+    label_col: str = "label",
+) -> pd.DataFrame:
+    """Select a deterministic per-class subset while keeping ALL images from
+    each selected patient (patient-level grouping, so the downstream
+    patient-level split never leaks a patient across train/val/test).
+
+    Used to limit the full Kermany OCT2017 dataset (~83k images) to a
+    PC-friendly subset (Option A), e.g. ~1,000 images per class.
+
+    Selection algorithm (per class):
+      1. Group images by patient, count images per patient.
+      2. Shuffle patients deterministically using `seed`.
+      3. Greedily pick patients (in shuffled order) until the accumulated
+         image count reaches `max_samples_per_class` or patients run out.
+
+    Returns:
+        A filtered DataFrame with the same columns as `index_df`.
+    """
+    rng = np.random.RandomState(seed)
+    selected_frames = []
+
+    for class_name in sorted(index_df[label_col].unique()):
+        class_df = index_df[index_df[label_col] == class_name]
+        target = min(max_samples_per_class, len(class_df))
+
+        # Group by patient (insertion-order preserved) and count images
+        patient_order = list(class_df.groupby(patient_col, sort=False).groups.keys())
+        patient_order = [pid for pid in patient_order if pid is not None]
+        rng.shuffle(patient_order)
+
+        picked_frames = []
+        n_picked_images = 0
+        for pid in patient_order:
+            if n_picked_images >= target:
+                break
+            patient_df = class_df[class_df[patient_col] == pid]
+            n_picked_images += len(patient_df)
+            picked_frames.append(patient_df)
+
+        if picked_frames:
+            selected_frames.append(pd.concat(picked_frames))
+            n_patients = len(
+                pd.concat(picked_frames)[patient_col].unique()
+            )
+            logger.info(
+                f"  Subset '{class_name}': selected {n_picked_images} images "
+                f"({n_patients} patients) targeting max {target}."
+            )
+
+    if not selected_frames:
+        return index_df
+
+    subset_df = pd.concat(selected_frames, ignore_index=True)
+    logger.info(
+        f"Subset selected {len(subset_df)} images across "
+        f"{subset_df[patient_col].nunique()} patients "
+        f"(max_samples_per_class={max_samples_per_class})."
+    )
+    return subset_df
+
+
+def load_raw_dataset_index(
+    raw_dir: str | Path,
+    classes: List[str],
+    max_samples_per_class: Optional[int] = None,
+    seed: int = 42,
+) -> pd.DataFrame:
     """Walk `raw_dir` and build an index DataFrame with columns
     [filepath, label, patient_id].
 
@@ -105,6 +183,11 @@ def load_raw_dataset_index(raw_dir: str | Path, classes: List[str]) -> pd.DataFr
 
     Patient IDs are extracted from filenames using `_extract_patient_id`.
     If a file cannot be assigned a patient_id, it gets a unique one.
+
+    If `max_samples_per_class` is set, the index is reduced to a
+    deterministic per-class subset via `subset_patient_level` (patient-level
+    grouping to avoid leakage) before returning. This is the Option A
+    mechanism for running the full Kermany dataset on modest hardware.
 
     Returns a DataFrame with columns:
         filepath : str   (absolute path to the image file)
@@ -147,6 +230,11 @@ def load_raw_dataset_index(raw_dir: str | Path, classes: List[str]) -> pd.DataFr
         f"Loaded {len(df)} images across {df['label'].nunique()} classes "
         f"({df['patient_id'].nunique()} unique patient IDs)."
     )
+
+    # Option A: reduce the full dataset to a PC-friendly subset
+    if max_samples_per_class and max_samples_per_class > 0:
+        df = subset_patient_level(df, max_samples_per_class, seed=seed)
+
     return df
 
 
@@ -316,11 +404,14 @@ def preprocess_images(
         else:
             img = img.astype(np.float32) / 255.0
 
-        # Save preprocessed image
+        # Save preprocessed image.
+        # NOTE: must use .tiff (not .png) for float32 — OpenCV's PNG encoder
+        # silently falls back to uint8 and clamps z-score values to [0,255],
+        # corrupting the data. TIFF supports float32 losslessly.
         label_dir = output_dir / label
         label_dir.mkdir(parents=True, exist_ok=True)
 
-        out_name = f"{src_path.stem}_processed.png"
+        out_name = f"{src_path.stem}_processed.tiff"
         out_path = label_dir / out_name
         cv2.imwrite(str(out_path), img.astype(np.float32))
 

@@ -41,11 +41,17 @@ class TopologyValidator:
     use_persistence: bool = True
 
     def _load_image(self, path: str | Path) -> np.ndarray:
-        """Load a preprocessed grayscale OCT image."""
-        img = cv2.imread(str(path), cv2.IMREAD_GRAYSCALE)
+        """Load a preprocessed grayscale OCT image.
+
+        Preprocessed images (real + synthetic) are z-score normalized float32
+        TIFFs. OpenCV's IMREAD_GRAYSCALE cannot decode 32-bit float samples
+        ("TIFFRGBAImageOK: Sorry, can not handle images with 32-bit samples"),
+        so use IMREAD_UNCHANGED and cast to float32 -- mirroring the loader in
+        data/dataset.py::OCTImageDataset._load_image.
+        """
+        img = cv2.imread(str(path), cv2.IMREAD_UNCHANGED)
         if img is None:
             raise FileNotFoundError(f"Could not read image: {path}")
-        # Preprocessed images are z-score normalized float32 PNGs.
         # cv2 reads 16-bit or 8-bit depending on dtype; normalize to float32.
         return img.astype(np.float32)
 

@@ -28,6 +28,8 @@ outputs/
 
 # temporary files
 data/test_raw/
+data/OCT2017/
+configs/config_full_factorial.yaml
 
 # proposal/report artifacts (not part of the code repo)
 reports/

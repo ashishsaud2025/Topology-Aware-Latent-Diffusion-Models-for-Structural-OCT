@@ -33,16 +33,14 @@ from utils.seed import set_global_seed
 logger = get_logger(__name__)
 
 
-# ---------------------------------------------------------------------------
 # Model builders
-# ---------------------------------------------------------------------------
 
 def build_autoencoder(cfg: Dict[str, Any]) -> nn.Module:
     """Instantiate the KL-autoencoder used to compress OCT images to latents.
 
-    Architecture suitable for 224x224 grayscale OCT images:
+    Architecture suitable for 224x224 OCT images:
       - 2D convolutions
-      - 1 input channel (grayscale), 1 output channel
+      - 3 input channels (the dataset loaders convert grayscale to RGB)
       - 3 latent channels (compressed representation)
       - Channel progression: 64 -> 128 -> 256 -> 512
       - Attention at 16x16 and 8x8 levels
@@ -55,8 +53,8 @@ def build_autoencoder(cfg: Dict[str, Any]) -> nn.Module:
     """
     ae = AutoencoderKL(
         spatial_dims=2,
-        in_channels=1,
-        out_channels=1,
+        in_channels=3,
+        out_channels=3,
         channels=(64, 128, 256, 512),
         latent_channels=cfg["generative"]["latent_channels"],
         num_res_blocks=(2, 2, 2, 2),
@@ -107,9 +105,14 @@ def build_diffusion_unet(cfg: Dict[str, Any]) -> nn.Module:
         spatial_dims=2,
         in_channels=latent_channels,
         out_channels=latent_channels,
-        channels=(64, 128, 256, 256),
-        attention_levels=(False, False, True, True),
-        num_res_blocks=(2, 2, 2, 2),
+        # 3 levels (2 downsamplings): 28 -> 14 -> 7, then 7 -> 14 -> 28.
+        # The autoencoder's latent is 28x28 (224/8). Using 4 levels would push
+        # to 28->14->7->3; the odd 7x7 level breaks the up-path skip-concat
+        # ("Expected size 8 but got size 7") because 28 is not divisible by 8.
+        # The deepest 7x7 level here is safe: nothing downsamples below it.
+        channels=(64, 128, 256),
+        attention_levels=(False, True, True),
+        num_res_blocks=(2, 2, 2),
         num_head_channels=8,
         # Class-conditioning via num_class_embeds (learned class embeddings
         # added to timestep embedding internally).  cross_attention_dim and
@@ -147,6 +150,10 @@ def build_scheduler(cfg: Dict[str, Any]):
     Supports DDPM (for training) and DDIM (for faster inference sampling).
     Defaults to DDPM if not specified or recognized.
 
+    `num_train_timesteps` is taken from `generative.num_train_timesteps`
+    (defaults to `num_inference_steps` then 1000), so a full-resolution
+    inference schedule can be paired with a cheaper training schedule.
+
     Args:
         cfg: Full pipeline config dict.
 
@@ -154,7 +161,10 @@ def build_scheduler(cfg: Dict[str, Any]):
         Scheduler instance (DDPMScheduler or DDIMScheduler).
     """
     scheduler_type = cfg["generative"].get("scheduler", "ddpm").lower()
-    num_train_timesteps = cfg["generative"].get("num_inference_steps", 1000)
+    num_train_timesteps = cfg["generative"].get(
+        "num_train_timesteps",
+        cfg["generative"].get("num_inference_steps", 1000),
+    )
 
     if scheduler_type == "ddim":
         scheduler = DDIMScheduler(
@@ -177,9 +187,7 @@ def build_scheduler(cfg: Dict[str, Any]):
     return scheduler
 
 
-# ---------------------------------------------------------------------------
 # Autoencoder training
-# ---------------------------------------------------------------------------
 
 def train_autoencoder_stage(
     autoencoder: nn.Module,
@@ -230,7 +238,7 @@ def train_autoencoder_stage(
     logger.info(f"Starting autoencoder training for up to {num_epochs} epochs...")
 
     for epoch in range(num_epochs):
-        # --- Training ---
+        # Training 
         autoencoder.train()
         train_recon_loss = 0.0
         train_kl_loss = 0.0
@@ -276,7 +284,7 @@ def train_autoencoder_stage(
 
         avg_train_loss = train_total_loss / max(num_batches, 1)
 
-        # --- Validation ---
+        # Validation 
         autoencoder.eval()
         val_total_loss = 0.0
         val_batches = 0
@@ -333,9 +341,7 @@ def train_autoencoder_stage(
     return autoencoder
 
 
-# ---------------------------------------------------------------------------
 # Diffusion model training
-# ---------------------------------------------------------------------------
 
 def train_diffusion_stage(
     autoencoder: nn.Module,
@@ -398,7 +404,7 @@ def train_diffusion_stage(
     logger.info(f"Starting diffusion UNet training for up to {num_epochs} epochs...")
 
     for epoch in range(num_epochs):
-        # --- Training ---
+        # Training 
         diffusion_unet.train()
         train_total_loss = 0.0
         num_batches = 0
@@ -444,7 +450,7 @@ def train_diffusion_stage(
 
         avg_train_loss = train_total_loss / max(num_batches, 1)
 
-        # --- Validation ---
+        # Validation 
         diffusion_unet.eval()
         val_total_loss = 0.0
         val_batches = 0
@@ -507,9 +513,7 @@ def train_diffusion_stage(
     return diffusion_unet
 
 
-# ---------------------------------------------------------------------------
 # Data loading helper for LDM training
-# ---------------------------------------------------------------------------
 
 def _build_ldm_data_loaders(cfg: Dict[str, Any]):
     """Build DataLoaders over the REAL train/val split for LDM fine-tuning.
@@ -576,9 +580,7 @@ def _build_ldm_data_loaders(cfg: Dict[str, Any]):
     return loaders["train"], loaders["val"]
 
 
-# ---------------------------------------------------------------------------
 # Main entrypoint
-# ---------------------------------------------------------------------------
 
 def main(cfg: Dict[str, Any]) -> None:
     """Run the full LDM fine-tuning pipeline.
@@ -601,8 +603,15 @@ def main(cfg: Dict[str, Any]) -> None:
     logger.info("Building autoencoder...")
     autoencoder = build_autoencoder(cfg).to(device)
 
-    logger.info("Training autoencoder stage...")
-    autoencoder = train_autoencoder_stage(autoencoder, train_loader, val_loader, cfg)
+    ae_checkpoint = cfg["generative"].get("autoencoder_checkpoint")
+    if ae_checkpoint and Path(ae_checkpoint).exists():
+        logger.info(
+            f"Autoencoder checkpoint found at {ae_checkpoint} -- "
+            "skipping AE training, loading pre-trained weights."
+        )
+    else:
+        logger.info("Training autoencoder stage...")
+        autoencoder = train_autoencoder_stage(autoencoder, train_loader, val_loader, cfg)
 
     logger.info("Building diffusion UNet and scheduler...")
     diffusion_unet = build_diffusion_unet(cfg).to(device)

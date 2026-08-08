@@ -21,10 +21,7 @@ from utils.logging_utils import get_logger
 logger = get_logger(__name__)
 
 
-# ---------------------------------------------------------------------------
 # Generator loading
-# ---------------------------------------------------------------------------
-
 def load_trained_generator(cfg: Dict[str, Any]):
     """Load the fine-tuned autoencoder + diffusion UNet + scheduler from
     checkpoints produced by generative/train_ldm.py.
@@ -74,10 +71,7 @@ def load_trained_generator(cfg: Dict[str, Any]):
     return autoencoder, diffusion_unet, scheduler
 
 
-# ---------------------------------------------------------------------------
 # Class-conditional sampling
-# ---------------------------------------------------------------------------
-
 @torch.no_grad()
 def sample_class_conditional_batch(
     autoencoder: torch.nn.Module,
@@ -165,9 +159,7 @@ def sample_class_conditional_batch(
     return images
 
 
-# ---------------------------------------------------------------------------
 # Synthetic pool generation
-# ---------------------------------------------------------------------------
 
 def compute_max_synthetic_requirement(
     real_class_counts: Dict[str, int],
@@ -358,11 +350,18 @@ def generate_synthetic_pool(
 
             # Save each image in the batch
             for i in range(images.shape[0]):
-                img = images[i].cpu().numpy()  # (1, H, W)
-                img = img.squeeze(0)  # (H, W)
+                img = images[i].cpu().numpy()  # (3, H, W)
+                # The autoencoder was trained on 3-channel input where all
+                # channels are the replicated grayscale value (see _to_rgb in
+                # data/dataset.py), so decode returns 3 identical channels.
+                # Take only the first channel to save as single-channel
+                # grayscale, matching the real preprocessing output format.
+                img = img[0]  # (H, W)
 
-                # Save as float32 PNG (same format as preprocessing)
-                out_name = f"synthetic_{n_generated + i:06d}.png"
+                # Save as float32 TIFF (lossless; matches preprocessing format).
+                # NOTE: PNG does NOT support float32 via OpenCV — it silently
+                # falls back to uint8 and clamps z-score values.
+                out_name = f"synthetic_{n_generated + i:06d}.tiff"
                 out_path = class_dir / out_name
                 cv2.imwrite(
                     str(out_path),
@@ -395,9 +394,7 @@ def generate_synthetic_pool(
     return index_df
 
 
-# ---------------------------------------------------------------------------
 # Main entrypoint
-# ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
     import argparse

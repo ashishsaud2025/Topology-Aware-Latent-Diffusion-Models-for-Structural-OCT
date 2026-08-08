@@ -37,7 +37,12 @@ def main() -> None:
 
         cfg = load_config(args.config)
         set_global_seed(cfg["project"]["seed"])
-        raw_index = load_raw_dataset_index(cfg["data"]["raw_dir"], cfg["data"]["classes"])
+        raw_index = load_raw_dataset_index(
+            cfg["data"]["raw_dir"],
+            cfg["data"]["classes"],
+            max_samples_per_class=cfg["data"].get("max_samples_per_class"),
+            seed=cfg["project"]["seed"],
+        )
         processed_index = preprocess_images(
             raw_index, cfg["data"]["processed_dir"], cfg["data"]["image_size"]
         )
