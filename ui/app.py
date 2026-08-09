@@ -19,6 +19,7 @@ from __future__ import annotations
 import datetime
 import glob
 import os
+import random
 
 import gradio as gr
 import numpy as np
@@ -35,6 +36,30 @@ os.makedirs(OUTPUT_DIR, exist_ok=True)
 # UI interactions, not re-created per request.
 STATE = {"ae": None, "unet": None, "classifiers": {}}  # classifiers: arch -> model
 
+DEFAULT_AUTOENCODER_PATH = "outputs/models/autoencoder.pt"
+DEFAULT_DIFFUSION_PATH = "outputs/models/diffusion_unet.pt"
+DEFAULT_SUMMARY_FOLDER = "outputs"
+
+
+def _get_random_checkpoint_path(arch: str) -> str:
+    checkpoint_dir = os.path.join("outputs", "checkpoints")
+    if not os.path.isdir(checkpoint_dir):
+        return ""
+
+    matches = [
+        os.path.join(checkpoint_dir, name)
+        for name in os.listdir(checkpoint_dir)
+        if name.endswith(".pt") and arch.lower() in name.lower()
+    ]
+    if not matches:
+        return ""
+    return random.choice(matches)
+
+
+def _resolve_checkpoint_path(path, default_path):
+    candidate = (path or "").strip()
+    return default_path if not candidate else candidate
+
 
 def _save(arr: np.ndarray, prefix: str) -> str:
     ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3]
@@ -45,22 +70,24 @@ def _save(arr: np.ndarray, prefix: str) -> str:
 
 # loaders
 
-def ui_load_autoencoder(path):
-    if not path or not os.path.exists(path):
-        return f"File not found: {path}"
+def ui_load_autoencoder(path=DEFAULT_AUTOENCODER_PATH):
+    resolved_path = _resolve_checkpoint_path(path, DEFAULT_AUTOENCODER_PATH)
+    if not os.path.exists(resolved_path):
+        return f"File not found: {resolved_path}"
     try:
-        model, status = mc.load_autoencoder(path)
+        model, status = mc.load_autoencoder(resolved_path)
         STATE["ae"] = model
         return status
     except Exception as e:
         return f"ERROR: {e}"
 
 
-def ui_load_diffusion(path):
-    if not path or not os.path.exists(path):
-        return f"File not found: {path}"
+def ui_load_diffusion(path=DEFAULT_DIFFUSION_PATH):
+    resolved_path = _resolve_checkpoint_path(path, DEFAULT_DIFFUSION_PATH)
+    if not os.path.exists(resolved_path):
+        return f"File not found: {resolved_path}"
     try:
-        model, status = mc.load_diffusion_unet(path)
+        model, status = mc.load_diffusion_unet(resolved_path)
         STATE["unet"] = model
         return status
     except Exception as e:
@@ -68,10 +95,12 @@ def ui_load_diffusion(path):
 
 
 def ui_load_classifier(arch, path):
-    if not path or not os.path.exists(path):
-        return f"File not found: {path}"
+    default_path = _get_random_checkpoint_path(arch)
+    resolved_path = _resolve_checkpoint_path(path, default_path)
+    if not resolved_path or not os.path.exists(resolved_path):
+        return f"File not found: {resolved_path}"
     try:
-        model, status = mc.load_classifier(arch, path)
+        model, status = mc.load_classifier(arch, resolved_path)
         STATE["classifiers"][arch] = model
         return status
     except Exception as e:
@@ -128,23 +157,24 @@ def ui_classify(arch, img):
     return mc.classify_image(STATE["classifiers"][arch], img)
 
 
-def ui_load_summary(results_folder):
-    if not results_folder or not os.path.isdir(results_folder):
-        raise gr.Error(f"Not a valid folder: {results_folder}")
+def ui_load_summary(results_folder=DEFAULT_SUMMARY_FOLDER):
+    resolved_folder = _resolve_checkpoint_path(results_folder, DEFAULT_SUMMARY_FOLDER)
+    if not os.path.isdir(resolved_folder):
+        raise gr.Error(f"Not a valid folder: {resolved_folder}")
 
-    findings = sm.load_hypothesis_findings(results_folder)
+    findings = sm.load_hypothesis_findings(resolved_folder)
     hyp_html = sm.render_hypothesis_html(findings)
 
-    anova_tables = sm.load_anova_tables(results_folder)
+    anova_tables = sm.load_anova_tables(resolved_folder)
     anova_dfs = [anova_tables.get(label) for label in sm.ANOVA_FILES.keys()]
 
-    marginal_fig = sm.plot_marginal_means(results_folder)
-    xai_fig = sm.plot_xai_heatmap_grid(results_folder)
-    topo_df, topo_note = sm.load_topology_report(results_folder)
+    marginal_fig = sm.plot_marginal_means(resolved_folder)
+    xai_fig = sm.plot_xai_heatmap_grid(resolved_folder)
+    topo_df, topo_note = sm.load_topology_report(resolved_folder)
 
-    found = glob.glob(os.path.join(results_folder, "**", "*.csv"), recursive=True) + \
-            glob.glob(os.path.join(results_folder, "**", "*.json"), recursive=True)
-    status = f"Loaded from `{results_folder}`. Found {len(found)} csv/json files."
+    found = glob.glob(os.path.join(resolved_folder, "**", "*.csv"), recursive=True) + \
+            glob.glob(os.path.join(resolved_folder, "**", "*.json"), recursive=True)
+    status = f"Loaded from `{resolved_folder}`. Found {len(found)} csv/json files."
 
     return (status, hyp_html, *anova_dfs, marginal_fig, xai_fig, topo_df,
             topo_note if topo_df is not None else "topology_report.csv not found in this folder.")
@@ -162,21 +192,26 @@ with gr.Blocks(title="OCT Model Explorer") as demo:
                      "doesn't match the file, you'll get a clear error instead of a silently "
                      "broken model.")
         with gr.Row():
-            ae_path = gr.Textbox(label="Autoencoder checkpoint path", placeholder="/path/to/autoencoder.pt")
+            ae_path = gr.Textbox(label="Autoencoder checkpoint path", value=DEFAULT_AUTOENCODER_PATH,
+                                 placeholder=DEFAULT_AUTOENCODER_PATH)
             ae_btn = gr.Button("Load Autoencoder")
         ae_status = gr.Textbox(label="Status", interactive=False)
         ae_btn.click(ui_load_autoencoder, inputs=ae_path, outputs=ae_status)
 
         with gr.Row():
-            unet_path = gr.Textbox(label="Diffusion UNet checkpoint path", placeholder="/path/to/diffusion_unet.pt")
+            unet_path = gr.Textbox(label="Diffusion UNet checkpoint path", value=DEFAULT_DIFFUSION_PATH,
+                                   placeholder=DEFAULT_DIFFUSION_PATH)
             unet_btn = gr.Button("Load Diffusion UNet")
         unet_status = gr.Textbox(label="Status", interactive=False)
         unet_btn.click(ui_load_diffusion, inputs=unet_path, outputs=unet_status)
 
         gr.Markdown("### Classifiers")
         for arch in ["resnet50", "efficientnet_b0", "vit_base"]:
+            default_classifier_path = _get_random_checkpoint_path(arch)
             with gr.Row():
-                cls_path = gr.Textbox(label=f"{arch} checkpoint path", placeholder=f"/path/to/{arch}.pt")
+                cls_path = gr.Textbox(label=f"{arch} checkpoint path",
+                                      value=default_classifier_path,
+                                      placeholder=default_classifier_path)
                 cls_btn = gr.Button(f"Load {arch}")
             cls_status = gr.Textbox(label="Status", interactive=False)
             cls_btn.click(ui_load_classifier, inputs=[gr.State(arch), cls_path], outputs=cls_status)
@@ -224,7 +259,8 @@ with gr.Blocks(title="OCT Model Explorer") as demo:
         )
         with gr.Row():
             results_folder = gr.Textbox(label="Results folder path",
-                                          placeholder="/path/to/outputs", scale=4)
+                                          value=DEFAULT_SUMMARY_FOLDER,
+                                          placeholder=DEFAULT_SUMMARY_FOLDER, scale=4)
             load_summary_btn = gr.Button("Load Summary", variant="primary", scale=1)
         summary_status = gr.Textbox(label="Status", interactive=False)
 
