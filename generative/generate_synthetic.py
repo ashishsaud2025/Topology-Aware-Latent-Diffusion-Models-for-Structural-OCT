@@ -151,6 +151,7 @@ def sample_class_conditional_batch(
         z = step_output[0]
 
     # Decode latent to image space
+    z = z * cfg["generative"]["latent_scale_factor"]  # scale latent back to original range
     images = autoencoder.decode(z)
 
     # Clamp to valid range (z-score normalized: typically [-3, 3])

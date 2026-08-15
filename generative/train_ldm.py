@@ -421,6 +421,7 @@ def train_diffusion_stage(
                 z_mu, z_sigma = autoencoder.encode(images)
                 # Reparameterization trick: z = mu + sigma * epsilon
                 z = z_mu + z_sigma * torch.randn_like(z_sigma)
+                z = z / cfg["generative"]["latent_scale_factor"]  # scale latent to match training 
 
             # Sample random timesteps
             batch_size = z.shape[0]
@@ -455,27 +456,31 @@ def train_diffusion_stage(
         val_total_loss = 0.0
         val_batches = 0
 
+        # Replace the random single-timestep validation with a fixed, averaged sweep
         with torch.no_grad():
             for batch in val_loader:
                 images, labels = batch[0].to(device), batch[1].to(device)
-
                 with autocast(enabled=(device == "cuda")):
                     z_mu, z_sigma = autoencoder.encode(images)
-                    z = z_mu  # use mean for validation (no sampling)
-                    batch_size = z.shape[0]
-                    timesteps = torch.randint(
-                        0, scheduler.num_train_timesteps, (batch_size,), device=device
-                    ).long()
-                    noise = torch.randn_like(z)
-                    noisy_z = scheduler.add_noise(
-                        original_samples=z, noise=noise, timesteps=timesteps
-                    )
-                    noise_pred = diffusion_unet(
-                        x=noisy_z, timesteps=timesteps, class_labels=labels
-                    )
-                    loss = mse_loss(noise_pred, noise)
+                    z = z_mu / cfg["generative"]["latent_scale_factor"]
 
-                val_total_loss += loss.item()
+                    # Average loss over several fixed, evenly-spaced timesteps
+                    # instead of one random draw -- removes epoch-to-epoch noise
+                    # from the early-stopping signal.
+                    eval_timesteps = torch.linspace(
+                        0, scheduler.num_train_timesteps - 1, steps=5
+                    ).long().to(device)
+
+                    batch_loss = 0.0
+                    for t in eval_timesteps:
+                        t_batch = t.expand(z.shape[0])
+                        noise = torch.randn_like(z)
+                        noisy_z = scheduler.add_noise(original_samples=z, noise=noise, timesteps=t_batch)
+                        noise_pred = diffusion_unet(x=noisy_z, timesteps=t_batch, class_labels=labels)
+                        batch_loss += mse_loss(noise_pred, noise).item()
+                    batch_loss /= len(eval_timesteps)
+
+                val_total_loss += batch_loss
                 val_batches += 1
 
         avg_val_loss = val_total_loss / max(val_batches, 1)
